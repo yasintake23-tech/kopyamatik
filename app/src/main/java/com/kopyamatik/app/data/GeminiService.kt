@@ -31,18 +31,41 @@ class GeminiService(
 6. Eğer cevap kısa veya tek kullanımlıksa (şık, tek kelime, kısa işlem sonucu vb.), cevabı peş peşe 6 kez tekrarla.
 7. Ardından bir sonraki soruya geç."""
 
-        private const val GEMINI_ENDPOINT =
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        /**
+         * Ordered fallback models to try when a model is deprecated or returns 404.
+         */
+        val FALLBACK_MODELS = listOf(
+            "gemini-3.8-flash",
+            "gemini-3.0-flash",
+            "gemini-flash-latest",
+            "gemini-2.0-flash"
+        )
+
+        private fun buildEndpoint(model: String, apiKey: String): String {
+            return "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${apiKey.trim()}"
+        }
     }
 
     private val gson = Gson()
 
+    // Cache the last working model name across the app session
+    @Volatile
+    private var lastWorkingModel: String? = null
+
+    private fun getOrderedModelsToTry(): List<String> {
+        val working = lastWorkingModel
+        return if (working != null) {
+            listOf(working) + (FALLBACK_MODELS - working)
+        } else {
+            FALLBACK_MODELS
+        }
+    }
+
     /**
-     * Test the validity of the Gemini API key using gemini-2.5-flash.
+     * Test the validity of the Gemini API key using fallback models.
      */
     suspend fun validateApiKey(apiKey: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val url = "$GEMINI_ENDPOINT?key=${apiKey.trim()}"
             val testPayload = mapOf(
                 "contents" to listOf(
                     mapOf(
@@ -53,27 +76,50 @@ class GeminiService(
                     )
                 )
             )
-            val requestBody = gson.toJson(testPayload).toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url(url)
-                .post(requestBody)
-                .build()
+            val requestBodyString = gson.toJson(testPayload)
+            val modelsToTry = getOrderedModelsToTry()
+            var lastError: String? = null
 
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    Result.success(true)
-                } else {
-                    val errorBody = response.body?.string().orEmpty()
-                    Result.failure(Exception("Gemini API Hatası (${response.code}): $errorBody"))
+            for (model in modelsToTry) {
+                val url = buildEndpoint(model, apiKey)
+                val request = Request.Builder()
+                    .url(url)
+                    .post(requestBodyString.toRequestBody("application/json".toMediaType()))
+                    .build()
+
+                try {
+                    client.newCall(request).execute().use { response ->
+                        if (response.isSuccessful) {
+                            lastWorkingModel = model
+                            return@withContext Result.success(true)
+                        }
+
+                        val errorBody = response.body?.string().orEmpty()
+                        lastError = "Model $model (${response.code}): $errorBody"
+
+                        // If 404 (model not found / deprecated for this API key), try next model
+                        if (response.code == 404) {
+                            return@use
+                        } else {
+                            // Non-404 errors (e.g. 400 Invalid Key or 403 Forbidden) fail immediately
+                            return@withContext Result.failure(
+                                Exception("Gemini API Hatası (${response.code}): $errorBody")
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    lastError = "Model $model bağlantı hatası: ${e.localizedMessage}"
                 }
             }
+
+            Result.failure(Exception("Hiçbir Gemini modeli çalıştırılamadı. Son hata: $lastError"))
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
     /**
-     * Solves questions present in the given bitmaps.
+     * Solves questions present in the given bitmaps, using fallback models if 404 occurs.
      */
     suspend fun solveQuestions(
         apiKey: String,
@@ -123,35 +169,55 @@ class GeminiService(
                 )
             )
 
-            val requestBody = gson.toJson(payload).toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url("$GEMINI_ENDPOINT?key=${apiKey.trim()}")
-                .post(requestBody)
-                .build()
+            val requestBodyString = gson.toJson(payload)
+            val modelsToTry = getOrderedModelsToTry()
+            var lastError: String? = null
 
-            client.newCall(request).execute().use { response ->
-                val bodyString = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(
-                        Exception("Gemini Soru Çözüm Hatası (${response.code}): $bodyString")
-                    )
-                }
+            for (model in modelsToTry) {
+                val url = buildEndpoint(model, apiKey)
+                val request = Request.Builder()
+                    .url(url)
+                    .post(requestBodyString.toRequestBody("application/json".toMediaType()))
+                    .build()
 
-                val jsonResponse = gson.fromJson(bodyString, JsonObject::class.java)
-                val candidates = jsonResponse.getAsJsonArray("candidates")
-                if (candidates != null && candidates.size() > 0) {
-                    val candidate = candidates.get(0).asJsonObject
-                    val content = candidate.getAsJsonObject("content")
-                    val parts = content.getAsJsonArray("parts")
-                    if (parts != null && parts.size() > 0) {
-                        val rawText = parts.get(0).asJsonObject.get("text").asString
-                        val sanitizedText = cleanMarkdownAndArtifacts(rawText)
-                        return@withContext Result.success(sanitizedText)
+                try {
+                    client.newCall(request).execute().use { response ->
+                        val bodyString = response.body?.string().orEmpty()
+
+                        if (!response.isSuccessful) {
+                            lastError = "Model $model (${response.code}): $bodyString"
+                            if (response.code == 404) {
+                                // Fallback to next model
+                                return@use
+                            } else {
+                                return@withContext Result.failure(
+                                    Exception("Gemini Soru Çözüm Hatası (${response.code}): $bodyString")
+                                )
+                            }
+                        }
+
+                        val jsonResponse = gson.fromJson(bodyString, JsonObject::class.java)
+                        val candidates = jsonResponse.getAsJsonArray("candidates")
+                        if (candidates != null && candidates.size() > 0) {
+                            val candidate = candidates.get(0).asJsonObject
+                            val content = candidate.getAsJsonObject("content")
+                            val parts = content.getAsJsonArray("parts")
+                            if (parts != null && parts.size() > 0) {
+                                val rawText = parts.get(0).asJsonObject.get("text").asString
+                                val sanitizedText = cleanMarkdownAndArtifacts(rawText)
+                                lastWorkingModel = model
+                                return@withContext Result.success(sanitizedText)
+                            }
+                        }
+
+                        lastError = "Geçerli metin yanıtı alınamadı ($model)."
                     }
+                } catch (e: Exception) {
+                    lastError = "Model $model bağlantı hatası: ${e.localizedMessage}"
                 }
-
-                Result.failure(Exception("Gemini'den geçerli bir metin yanıtı alınamadı."))
             }
+
+            Result.failure(Exception("Hiçbir Gemini modeli yanıt vermedi ($modelsToTry). Son hata: $lastError"))
         } catch (e: Exception) {
             Result.failure(e)
         }

@@ -71,6 +71,7 @@ fun SettingsScreen(
     var isFishKeyVisible by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
+    val scrollState = rememberScrollState()
 
     LaunchedEffect(uiState) {
         when (uiState) {
@@ -81,6 +82,7 @@ fun SettingsScreen(
             }
             is SettingsUiState.Error -> {
                 snackbarHostState.showSnackbar((uiState as SettingsUiState.Error).message)
+                scrollState.animateScrollTo(scrollState.maxValue)
             }
             else -> Unit
         }
@@ -116,7 +118,7 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .background(PureWhite)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
@@ -272,6 +274,8 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(48.dp))
         }
     }
 }
