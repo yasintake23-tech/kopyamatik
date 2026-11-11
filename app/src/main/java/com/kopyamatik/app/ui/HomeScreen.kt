@@ -173,19 +173,23 @@ fun HomeScreen(
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = CharcoalDark,
-                            contentColor = PureWhite
+                            contentColor = Color.White,
+                            disabledContainerColor = CharcoalDark,
+                            disabledContentColor = Color.White
                         )
                     ) {
                         Icon(
                             imageVector = Icons.Default.AddPhotoAlternate,
                             contentDescription = null,
+                            tint = Color.White,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "SS Yükle",
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 15.sp
+                            fontSize = 15.sp,
+                            color = Color.White
                         )
                     }
 
@@ -216,13 +220,15 @@ fun HomeScreen(
                         Icon(
                             imageVector = Icons.Default.CameraAlt,
                             contentDescription = null,
+                            tint = CharcoalDark,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "Fotoğraf Çek",
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 15.sp
+                            fontSize = 15.sp,
+                            color = CharcoalDark
                         )
                     }
                 }
@@ -290,13 +296,16 @@ fun HomeScreen(
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = CharcoalDark,
-                            contentColor = PureWhite
+                            contentColor = Color.White,
+                            disabledContainerColor = Color(0xFF6B7280),
+                            disabledContentColor = Color.White
                         )
                     ) {
                         Text(
                             text = "Soruları Çöz ve Seslendir",
                             fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                     }
                 }
@@ -542,7 +551,7 @@ fun AudioPlayerCard(
                                 text = "${speed}x",
                                 fontSize = 12.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) PureWhite else CharcoalDark
+                                color = if (isSelected) Color.White else CharcoalDark
                             )
                         }
                     }

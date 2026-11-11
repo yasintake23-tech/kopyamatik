@@ -230,7 +230,9 @@ fun SettingsScreen(
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = CharcoalDark,
-                    contentColor = PureWhite
+                    contentColor = Color.White,
+                    disabledContainerColor = Color(0xFF6B7280),
+                    disabledContentColor = Color.White
                 )
             ) {
                 if (isChecking) {
@@ -239,11 +241,16 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         CircularProgressIndicator(
-                            color = PureWhite,
+                            color = Color.White,
                             modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp
                         )
-                        Text(text = "Doğrulanıyor...", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "Doğrulanıyor...",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
                     }
                 } else {
                     Row(
@@ -253,13 +260,14 @@ fun SettingsScreen(
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = null,
-                            tint = PureWhite,
+                            tint = Color.White,
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
                             text = "Kontrol Et ve Kaydet",
                             fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
                         )
                     }
                 }

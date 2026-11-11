@@ -32,20 +32,31 @@ class GeminiService(
 7. Ardından bir sonraki soruya geç."""
 
         private const val GEMINI_ENDPOINT =
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     }
 
     private val gson = Gson()
 
     /**
-     * Test the validity of the Gemini API key.
+     * Test the validity of the Gemini API key using gemini-2.5-flash.
      */
     suspend fun validateApiKey(apiKey: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val url = "https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}"
+            val url = "$GEMINI_ENDPOINT?key=${apiKey.trim()}"
+            val testPayload = mapOf(
+                "contents" to listOf(
+                    mapOf(
+                        "role" to "user",
+                        "parts" to listOf(
+                            mapOf("text" to "ping")
+                        )
+                    )
+                )
+            )
+            val requestBody = gson.toJson(testPayload).toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
                 .url(url)
-                .get()
+                .post(requestBody)
                 .build()
 
             client.newCall(request).execute().use { response ->
