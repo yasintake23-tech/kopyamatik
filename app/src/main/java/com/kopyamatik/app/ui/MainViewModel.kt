@@ -18,6 +18,7 @@ import com.kopyamatik.app.data.GeminiService
 import com.kopyamatik.app.data.SettingsDataStore
 import com.kopyamatik.app.service.AudioPlaybackService
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.File
 
 sealed interface ProcessState {
@@ -301,35 +303,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun validateAndSaveSettings(geminiKey: String, fishKey: String, voiceId: String) {
         viewModelScope.launch {
-            if (geminiKey.isBlank() || fishKey.isBlank() || voiceId.isBlank()) {
+            val cleanGemini = geminiKey.trim()
+            val cleanFish = fishKey.trim()
+            val cleanVoice = voiceId.trim()
+
+            if (cleanGemini.isBlank() || cleanFish.isBlank() || cleanVoice.isBlank()) {
                 _settingsUiState.value = SettingsUiState.Error("Lütfen tüm alanları eksiksiz doldurun.")
                 return@launch
             }
 
             _settingsUiState.value = SettingsUiState.Checking
 
-            // Test Gemini API key
-            val geminiValidation = geminiService.validateApiKey(geminiKey)
-            if (geminiValidation.isFailure) {
+            try {
+                withTimeout(10_000L) {
+                    // Test Gemini API key (fast GET endpoint ~200ms)
+                    val geminiValidation = geminiService.validateApiKey(cleanGemini)
+                    if (geminiValidation.isFailure) {
+                        _settingsUiState.value = SettingsUiState.Error(
+                            geminiValidation.exceptionOrNull()?.message ?: "Gemini API anahtarı geçersiz."
+                        )
+                        return@withTimeout
+                    }
+
+                    // Test Fish Audio API key & Model (fast GET endpoint ~200ms)
+                    val fishValidation = fishAudioService.validateApiKeyAndModel(cleanFish, cleanVoice)
+                    if (fishValidation.isFailure) {
+                        _settingsUiState.value = SettingsUiState.Error(
+                            fishValidation.exceptionOrNull()?.message ?: "Fish Audio API veya Model ID geçersiz."
+                        )
+                        return@withTimeout
+                    }
+
+                    // Both valid: persist into DataStore
+                    dataStore.saveSettings(cleanGemini, cleanFish, cleanVoice)
+                    _settingsUiState.value = SettingsUiState.Success
+                    _toastEvent.emit("Tamamlandı")
+                }
+            } catch (e: TimeoutCancellationException) {
                 _settingsUiState.value = SettingsUiState.Error(
-                    geminiValidation.exceptionOrNull()?.message ?: "Gemini API anahtarı geçersiz."
+                    "Doğrulama zaman aşımına uğradı (10 sn). İnternet bağlantınızı kontrol edin veya 'Test Etmeden Kaydet' butonuna basarak doğrudan kaydedebilirsiniz."
                 )
+            } catch (e: Throwable) {
+                _settingsUiState.value = SettingsUiState.Error(
+                    "Doğrulama hatası: ${e.localizedMessage}"
+                )
+            }
+        }
+    }
+
+    fun saveSettingsDirectly(geminiKey: String, fishKey: String, voiceId: String) {
+        viewModelScope.launch {
+            val cleanGemini = geminiKey.trim()
+            val cleanFish = fishKey.trim()
+            val cleanVoice = voiceId.trim()
+
+            if (cleanGemini.isBlank() || cleanFish.isBlank() || cleanVoice.isBlank()) {
+                _settingsUiState.value = SettingsUiState.Error("Lütfen tüm alanları eksiksiz doldurun.")
                 return@launch
             }
 
-            // Test Fish Audio API key & Model
-            val fishValidation = fishAudioService.validateApiKeyAndModel(fishKey, voiceId)
-            if (fishValidation.isFailure) {
-                _settingsUiState.value = SettingsUiState.Error(
-                    fishValidation.exceptionOrNull()?.message ?: "Fish Audio API veya Model ID geçersiz."
-                )
-                return@launch
-            }
-
-            // Both valid: persist into DataStore
-            dataStore.saveSettings(geminiKey, fishKey, voiceId)
+            dataStore.saveSettings(cleanGemini, cleanFish, cleanVoice)
             _settingsUiState.value = SettingsUiState.Success
-            _toastEvent.emit("Tamamlandı")
+            _toastEvent.emit("Kaydedildi")
         }
     }
 

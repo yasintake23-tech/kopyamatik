@@ -15,9 +15,9 @@ import java.util.concurrent.TimeUnit
 
 class GeminiService(
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .writeTimeout(45, TimeUnit.SECONDS)
         .build()
 ) {
 
@@ -31,9 +31,6 @@ class GeminiService(
 6. Eğer cevap kısa veya tek kullanımlıksa (şık, tek kelime, kısa işlem sonucu vb.), cevabı peş peşe 6 kez tekrarla.
 7. Ardından bir sonraki soruya geç."""
 
-        /**
-         * Ordered fallback models to try when a model is deprecated or returns 404.
-         */
         val FALLBACK_MODELS = listOf(
             "gemini-3.8-flash",
             "gemini-3.0-flash",
@@ -48,7 +45,14 @@ class GeminiService(
 
     private val gson = Gson()
 
-    // Cache the last working model name across the app session
+    // Dedicated fast client for validation with short timeouts (max 6 seconds)
+    private val fastValidationClient = client.newBuilder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .writeTimeout(6, TimeUnit.SECONDS)
+        .build()
+
+    // Cache the verified working model name across the app session
     @Volatile
     private var lastWorkingModel: String? = null
 
@@ -62,64 +66,57 @@ class GeminiService(
     }
 
     /**
-     * Test the validity of the Gemini API key using fallback models.
+     * Fast, lightweight API key validation (~200ms) using the official models list GET endpoint.
+     * Avoids generating content or consuming tokens, and automatically discovers which Flash model is available.
      */
     suspend fun validateApiKey(apiKey: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val cleanKey = apiKey.trim()
+        if (cleanKey.isEmpty()) {
+            return@withContext Result.failure(Exception("Gemini API anahtarı boş olamaz."))
+        }
+
         try {
-            val testPayload = mapOf(
-                "contents" to listOf(
-                    mapOf(
-                        "role" to "user",
-                        "parts" to listOf(
-                            mapOf("text" to "ping")
-                        )
-                    )
-                )
-            )
-            val requestBodyString = gson.toJson(testPayload)
-            val modelsToTry = getOrderedModelsToTry()
-            var lastError: String? = null
+            val listModelsUrl = "https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey"
+            val request = Request.Builder()
+                .url(listModelsUrl)
+                .get()
+                .build()
 
-            for (model in modelsToTry) {
-                val url = buildEndpoint(model, apiKey)
-                val request = Request.Builder()
-                    .url(url)
-                    .post(requestBodyString.toRequestBody("application/json".toMediaType()))
-                    .build()
-
-                try {
-                    client.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) {
-                            lastWorkingModel = model
-                            return@withContext Result.success(true)
+            fastValidationClient.newCall(request).execute().use { response ->
+                val bodyString = response.body?.string().orEmpty()
+                if (response.isSuccessful) {
+                    try {
+                        val json = gson.fromJson(bodyString, JsonObject::class.java)
+                        val modelsArray = json.getAsJsonArray("models")
+                        if (modelsArray != null) {
+                            val availableModels = mutableListOf<String>()
+                            for (element in modelsArray) {
+                                val name = element.asJsonObject.get("name")?.asString.orEmpty()
+                                availableModels.add(name.removePrefix("models/"))
+                            }
+                            // Select preferred model from our list if available
+                            val best = FALLBACK_MODELS.firstOrNull { it in availableModels }
+                                ?: availableModels.firstOrNull { it.contains("flash", ignoreCase = true) }
+                            if (best != null) {
+                                lastWorkingModel = best
+                            }
                         }
-
-                        val errorBody = response.body?.string().orEmpty()
-                        lastError = "Model $model (${response.code}): $errorBody"
-
-                        // If 404 (model not found / deprecated for this API key), try next model
-                        if (response.code == 404) {
-                            return@use
-                        } else {
-                            // Non-404 errors (e.g. 400 Invalid Key or 403 Forbidden) fail immediately
-                            return@withContext Result.failure(
-                                Exception("Gemini API Hatası (${response.code}): $errorBody")
-                            )
-                        }
-                    }
-                } catch (e: Exception) {
-                    lastError = "Model $model bağlantı hatası: ${e.localizedMessage}"
+                    } catch (_: Exception) {}
+                    return@withContext Result.success(true)
+                } else {
+                    val humanError = parseGoogleError(bodyString, response.code)
+                    return@withContext Result.failure(Exception(humanError))
                 }
             }
-
-            Result.failure(Exception("Hiçbir Gemini modeli çalıştırılamadı. Son hata: $lastError"))
         } catch (e: Exception) {
-            Result.failure(e)
+            return@withContext Result.failure(
+                Exception("Gemini sunucusuna bağlanılamadı (${e.localizedMessage}). Lütfen internetinizi kontrol edin.")
+            )
         }
     }
 
     /**
-     * Solves questions present in the given bitmaps, using fallback models if 404 occurs.
+     * Solves questions present in the given bitmaps, trying fallback models if 404 occurs.
      */
     suspend fun solveQuestions(
         apiKey: String,
@@ -190,9 +187,8 @@ class GeminiService(
                                 // Fallback to next model
                                 return@use
                             } else {
-                                return@withContext Result.failure(
-                                    Exception("Gemini Soru Çözüm Hatası (${response.code}): $bodyString")
-                                )
+                                val err = parseGoogleError(bodyString, response.code)
+                                return@withContext Result.failure(Exception(err))
                             }
                         }
 
@@ -223,14 +219,23 @@ class GeminiService(
         }
     }
 
-    /**
-     * Strips markdown symbols (*, #, `, _, etc.) to ensure clean, natural speech synthesis.
-     */
+    private fun parseGoogleError(bodyString: String, statusCode: Int): String {
+        try {
+            val json = gson.fromJson(bodyString, JsonObject::class.java)
+            val errorObj = json.getAsJsonObject("error")
+            val message = errorObj?.get("message")?.asString
+            if (!message.isNullOrBlank()) {
+                return "Gemini Hatası ($statusCode): $message"
+            }
+        } catch (_: Exception) {}
+        return "Gemini Hatası ($statusCode): $bodyString"
+    }
+
     private fun cleanMarkdownAndArtifacts(text: String): String {
         return text
-            .replace(Regex("[*#`_~>]"), "") // Remove markdown format symbols
-            .replace(Regex("\\s+"), " ")      // Collapse multiple whitespace
-            .replace("\n\n\n+", "\n\n")       // Normalize multiple newlines
+            .replace(Regex("[*#`_~>]"), "")
+            .replace(Regex("\\s+"), " ")
+            .replace("\n\n\n+", "\n\n")
             .trim()
     }
 }
